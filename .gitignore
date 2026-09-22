@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.workbench/
+*.log
+design/
+releases/
+.release-cache/
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
