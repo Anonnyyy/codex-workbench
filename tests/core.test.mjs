@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {parseEvents,createCollector} from '../server/collector.mjs';
-import {unread,treeRows,parentOf,projectLocation,groupProjects,markReadBefore,markCompletedRead,recentConversations} from '../src/model.js';
+import {unread,treeRows,parentOf,projectLocation,groupProjects,markReadBefore,markCompletedRead,recentConversations,notificationReason,automaticTitle,displayTitle,isReviewHistoryThread} from '../src/model.js';
 import {nativeReadSnapshot} from '../server/native-read-state.mjs';
 import {createStore} from '../server/store.mjs';
 import {mkdtempSync,rmSync,writeFileSync,appendFileSync,statSync,utimesSync} from 'node:fs';
@@ -37,6 +37,35 @@ test('historical read baseline preserves today, organization, and unread on late
 });
 const msg=(phase,text='hello')=>({timestamp:at,type:'response_item',payload:{type:'message',role:'assistant',phase,content:[{type:'output_text',text}]}});
 const serialize=items=>items.map(x=>JSON.stringify(x)).join('\n');
+test('desktop notifications only cover completion, stuck tasks, and new errors',()=>{
+ const base={key:'task',online:true,state:'running',messages:[]};
+ assert.equal(notificationReason(base,{...base,state:'attention'}),null);
+ assert.equal(notificationReason(base,{...base,state:'interrupted'}),null);
+ assert.deepEqual(notificationReason(base,{...base,state:'completed'}),{kind:'completed',label:'已完成'});
+ assert.deepEqual(notificationReason(base,{...base,state:'unknown'}),{kind:'stuck',label:'长时间无响应'});
+ assert.deepEqual(notificationReason(base,{...base,error:'model at capacity'}),{kind:'error',label:'出错',detail:'model at capacity'});
+ assert.equal(notificationReason({...base,error:'model at capacity'},{...base,error:'model at capacity'}),null);
+});
+test('IDE context titles are reduced and explicit title overrides win',()=>{
+ const raw='# Context from my IDE setup: ## Active file: src/app.py ## My request: 核对录制数据并修复同步问题';
+ assert.equal(automaticTitle(raw),'核对录制数据并修复同步问题');
+ assert.equal(displayTitle({key:'t',title:raw},{}),'核对录制数据并修复同步问题');
+ assert.equal(displayTitle({key:'t',title:raw},{t:{title:'录制数据同步'}}),'录制数据同步');
+ assert.equal(automaticTitle('普通任务标题'),'普通任务标题');
+ assert.equal(automaticTitle('# Context from my IDE setup: ## My request: 先检查配置。然后再运行测试'),'先检查配置');
+ assert.equal(automaticTitle('我现在用 grail 训练好了模型 在/home/sharpa/code/Isaac-GR00T/ckpt/checkpoint-20000，我应该部署它'),'我现在用 grail 训练好了模型');
+});
+test('approval-review history topics are hidden from the workstation',()=>{
+ assert.equal(isReviewHistoryThread('The following is the Codex agent history whose request action you are assessing…'),true);
+ assert.equal(isReviewHistoryThread({title:'  THE FOLLOWING IS THE CODEX AGENT HISTORY WHOSE REQUEST ACTION YOU ARE ASSESSING... '}),true);
+ assert.equal(isReviewHistoryThread({title:'Review the Codex agent history'}),false);
+});
+test('capacity failures are retained as errors instead of successful completion',()=>{
+ const event={timestamp:at,type:'event_msg',payload:{type:'task_complete',error:{message:'Selected model is at capacity. Please try a different model.',codex_error_info:'server_overloaded'}}};
+ const parsed=parseEvents(serialize([event]),now);
+ assert.equal(parsed.state,'error');
+ assert.equal(parsed.error,'Selected model is at capacity. Please try a different model.');
+});
 test('recent timeline orders all devices by invocation, not ongoing assistant output',()=>{
  const items=[{key:'remote:older',lastUserAt:'2026-09-22T01:00:00Z',lastAt:'2026-09-22T09:00:00Z'},
   {key:'local:newer',lastUserAt:'2026-09-22T02:00:00Z'},{key:'remote:legacy',updatedAt:Date.parse('2026-09-22T03:00:00Z')},{key:'unknown'}];

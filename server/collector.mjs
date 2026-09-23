@@ -4,8 +4,16 @@ import {join, resolve, relative, isAbsolute,toNamespacedPath} from 'node:path';
 import {homedir, hostname} from 'node:os';
 import {readNativeState} from './native-read-state.mjs';
 
+const capacityError=/\b(?:model\s+at\s+capacity|at\s+capacity|rate[\s_-]*limit(?:ed)?|quota\s+(?:exceeded|exhausted)|(?:service|server)\s+unavailable|overloaded)\b/i;
+function errorText(value){
+  if(!value)return '';
+  if(typeof value==='string')return value;
+  if(typeof value==='object')return String(value.message??value.detail??value.code??value.type??'');
+  return String(value);
+}
+
 export function parseEvents(text, now=Date.now(), seed={}) {
-  let state=seed.state??'unknown', lastAt=seed.lastAt??null, parentId=seed.parentId??null, messages=[...(seed.messages??[])], revision=seed.revision??'';
+  let state=seed.state??'unknown', lastAt=seed.lastAt??null, parentId=seed.parentId??null, messages=[...(seed.messages??[])], revision=seed.revision??'', error=seed.error??'';
   let lastUserAt=seed.lastUserAt??null;
   for(const line of text.split('\n')) {
     let e; try{e=JSON.parse(line);}catch{continue;}
@@ -13,16 +21,18 @@ export function parseEvents(text, now=Date.now(), seed={}) {
     if((e.type==='event_msg'&&p.type==='user_message')||(e.type==='response_item'&&p.type==='message'&&p.role==='user')){if(Date.parse(at)>(Date.parse(lastUserAt)||0))lastUserAt=at;}
     if(e.type==='session_meta') parentId=p.forked_from_id??p.forked_from_thread_id??p.source?.subagent?.thread_spawn?.parent_thread_id??null;
     if(e.type==='event_msg') {
-      if(['task_started','turn_started'].includes(p.type)) {state='running';lastAt=at;}
+      if(['task_started','turn_started'].includes(p.type)) {state='running';lastAt=at;error='';}
       if(['task_complete','task_completed','turn_completed'].includes(p.type)) {state='completed';lastAt=at;}
       if(['turn_aborted','task_interrupted'].includes(p.type)) {state='interrupted';lastAt=at;}
       if(['approval_requested','request_user_input'].includes(p.type)) {state='attention';lastAt=at;}
+      if(p.error){error=errorText(p.error)||'任务出错';state='error';lastAt=at;}
     }
     if(e.type==='response_item'&&p.type==='message'&&p.role==='assistant') {
       const body=(p.content??[]).filter(c=>c.type==='output_text'||c.type==='text').map(c=>c.text).join('\n');
       if(body) {messages.push({at,text:body.slice(0,16000),phase:p.phase==='final_answer'?'final':p.phase??'unknown'});revision=at??body.slice(-80);}
       if(['final','final_answer'].includes(p.phase)) {state='completed';lastAt=at;}
       if(p.phase==='commentary') {state='running';lastAt=at;}
+      if(capacityError.test(body)){error=body.slice(0,16000);state='error';lastAt=at;}
     }
     if(e.type==='response_item'&&['function_call','custom_tool_call','reasoning'].includes(p.type)) {state='running';lastAt=at;}
     if(state==='running'&&e.type==='event_msg'&&p.type==='token_count')lastAt=at;
@@ -30,7 +40,7 @@ export function parseEvents(text, now=Date.now(), seed={}) {
   // A stale start is not proof that a process is still alive.
   if(state==='running'&&(!lastAt||now-Date.parse(lastAt)>120000))state='unknown';
   messages=[...new Map(messages.map(m=>[m.at+':'+m.text,m])).values()].sort((a,b)=>Date.parse(a.at)-Date.parse(b.at));
-  return {state,lastAt,lastUserAt,parentId,messages:messages.slice(-8),revision};
+  return {state,lastAt,lastUserAt,parentId,messages:messages.slice(-8),revision,...(error?{error}: {})};
 }
 
 export function createCollector(home=process.env.CODEX_HOME||join(homedir(),'.codex')) {

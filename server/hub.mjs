@@ -6,7 +6,7 @@ import {fileURLToPath} from 'node:url';
 import {createCollector} from './collector.mjs';
 import {createStore} from './store.mjs';
 import {connectSsh} from './ssh.mjs';
-import {markReadBefore,markCompletedRead,groupProjects} from '../src/model.js';
+import {markReadBefore,markCompletedRead,groupProjects,isReviewHistoryThread} from '../src/model.js';
 import {createEventFeed} from './event-feed.mjs';
 import {resolveWorkspaces} from './vscode-workspaces.mjs';
 import {readVscodeState,createVscodeReadTracker} from './vscode-read-state.mjs';
@@ -37,7 +37,7 @@ async function poll(){
         cache.set(d.id,snapshot);return {d,snapshot,online:true};
       }catch(e){return {d,snapshot:cache.get(d.id),online:false,error:d.id==='local'?'无法读取本机 Codex 记录':e.message};}
     }));
-    current={updatedAt:Date.now(),threads:results.flatMap(({d,snapshot,online})=>(snapshot?.threads??[]).map(t=>({...t,key:d.id+':'+t.id,deviceId:d.id,deviceName:d.name,online,parentKey:t.parentId?d.id+':'+t.parentId:null}))),devices:results.map(({d,snapshot,online,error})=>({id:d.id,name:d.name,type:d.type,host:d.host,username:d.username,online,error,platform:snapshot?.platform,processes:snapshot?.processes,observedAt:snapshot?.observedAt,url:d.url,fingerprint:d.fingerprint}))};
+    current={updatedAt:Date.now(),threads:results.flatMap(({d,snapshot,online})=>(snapshot?.threads??[]).filter(t=>!isReviewHistoryThread(t)).map(t=>({...t,key:d.id+':'+t.id,deviceId:d.id,deviceName:d.name,online,parentKey:t.parentId?d.id+':'+t.parentId:null}))),devices:results.map(({d,snapshot,online,error})=>({id:d.id,name:d.name,type:d.type,host:d.host,username:d.username,online,error,platform:snapshot?.platform,processes:snapshot?.processes,observedAt:snapshot?.observedAt,url:d.url,fingerprint:d.fingerprint}))};
     trackVscodeReads(await readVscodeState(),current.threads);
     const saved=structuredClone(store.get());let readsChanged=false;
     for(const t of current.threads){
@@ -88,6 +88,12 @@ const server=createServer(async(req,res)=>{
           patch.parentKey=b.parentKey||null;
         }
         if('read'in b){const t=current.threads.find(t=>t.key===b.key);if('revision'in b&&b.revision!==t.revision)return json(res,409,{error:'收到新回复，请查看最新内容后再修改已读状态'});patch.readRevision=b.read?t.revision:null;patch.forceUnread=!b.read;patch.forceUnreadRevision=b.read?null:t.revision;}
+        if('title'in b){
+          if(b.title!==null&&typeof b.title!=='string')throw new Error('任务标题格式无效');
+          const title=String(b.title??'').replace(/\s+/g,' ').trim();
+          if(title.length>100)throw new Error('任务标题应不超过 100 个字符');
+          patch.title=title||null;
+        }
         s.meta[b.key]={...s.meta[b.key],...patch};
       }else if(req.url==='/api/devices'){
         const name=String(b.name??'').trim(),token=String(b.token??'');if(!name||name.length>60||token.length<24)throw new Error('请填写设备名称与完整配对密钥');

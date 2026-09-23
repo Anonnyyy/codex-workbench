@@ -1,16 +1,18 @@
 import {useEffect,useRef,useState} from 'react';
-import {labels} from './model';
+import {notificationReason,displayTitle} from './model';
 const initial={threads:[],devices:[],folders:[],meta:{}};
 export function useWorkbench(){
   const [data,setData]=useState(initial),[connected,setConnected]=useState(false),[toast,setToast]=useState('');
-  const previous=useRef(null),notify=useRef(false);
+  const previous=useRef(null),notify=useRef(false),meta=useRef({});
   useEffect(()=>{let lastMessage=0;const events=new EventSource('/api/events');events.onerror=()=>setConnected(false);events.onmessage=e=>{
     const next=JSON.parse(e.data);
-    lastMessage=Date.now();setConnected(true);
-    if(previous.current){for(const t of next.threads){const old=previous.current.get(t.key);if(old&&t.online&&t.state!==old.state&&['completed','attention','interrupted'].includes(t.state)){
-      setToast(`${t.title} · ${labels[t.state]}`);
-      if(notify.current&&globalThis.Notification?.permission==='granted')new Notification('Codex 工作台',{body:`${t.title} · ${labels[t.state]}`});
-    }}}
+    lastMessage=Date.now();setConnected(true);meta.current=next.meta??{};
+    if(previous.current){for(const t of next.threads){
+      const reason=notificationReason(previous.current.get(t.key),t);if(!reason)continue;
+      const body=`${displayTitle(t,meta.current)} · ${reason.label}${reason.detail?`：${reason.detail}`:''}`;
+      setToast(body);
+      if(notify.current&&globalThis.Notification?.permission==='granted')new Notification('Codex 工作台',{body});
+    }}
     previous.current=new Map(next.threads.map(t=>[t.key,t]));setData(next);
   };const watchdog=setInterval(()=>{if(Date.now()-lastMessage>15000)setConnected(false);},3000);return()=>{clearInterval(watchdog);events.close();};},[]);
   useEffect(()=>{if(!toast)return;const timer=setTimeout(()=>setToast(''),5500);return()=>clearTimeout(timer);},[toast]);

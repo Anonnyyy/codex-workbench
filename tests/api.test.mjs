@@ -35,6 +35,10 @@ test('HTTP API rejects foreign origins, persists organization and prevents paren
   assert.equal((await request('meta',{key:'local:b',parentKey:'local:a'})).status,200);
   assert.equal((await request('meta',{key:'local:a',parentKey:'local:b'})).status,400);
   state=await fetch(base+'/api/state').then(r=>r.json());assert.equal(state.meta['local:a'].folderId,folderId);assert.ok(state.meta['local:a'].readRevision);
+  assert.equal((await request('meta',{key:'local:a',title:'暂存区代码核对'})).status,200);
+  state=await fetch(base+'/api/state').then(r=>r.json());assert.equal(state.meta['local:a'].title,'暂存区代码核对');
+  assert.equal((await request('meta',{key:'local:a',title:'x'.repeat(101)})).status,400);
+  assert.equal((await request('meta',{key:'local:a',title:null})).status,200);
   assert.equal((await request('folder/delete',{id:folderId})).status,200);
   state=await fetch(base+'/api/state').then(r=>r.json());assert.equal(state.threads.length,2);assert.equal(state.meta['local:a'].folderId,null);
   const freshDb=new DatabaseSync(join(dir,'state_5.sqlite')),path=join(dir,'new.jsonl');

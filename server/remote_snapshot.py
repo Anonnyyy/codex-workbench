@@ -23,6 +23,13 @@ def millis(stamp):
     try: return datetime.datetime.fromisoformat(stamp.replace('Z', '+00:00')).timestamp() * 1000
     except Exception: return 0
 
+capacity_error=re.compile(r'\b(?:model\s+at\s+capacity|at\s+capacity|rate[\s_-]*limit(?:ed)?|quota\s+(?:exceeded|exhausted)|(?:service|server)\s+unavailable|overloaded)\b', re.I)
+def error_text(value):
+    if not value: return ''
+    if isinstance(value, str): return value
+    if isinstance(value, dict): return str(value.get('message') or value.get('detail') or value.get('code') or value.get('type') or '')
+    return str(value)
+
 def events(path):
     resolved = pathlib.Path(path).resolve()
     if home not in resolved.parents: raise ValueError('outside Codex home')
@@ -37,6 +44,7 @@ def events(path):
         f.seek(max(0, info.st_size-786432)); text = f.read().decode('utf-8', 'replace')
     seed = old[1] if old and info.st_size>=old[0][1] else {}
     state, last, revision, parent, messages = seed.get('state','unknown'), seed.get('lastAt'), seed.get('revision',''), seed.get('parentId'), list(seed.get('messages',[]))
+    error = seed.get('error','')
     last_user=seed.get('lastUserAt')
     try:
         p = json.loads(first).get('payload', {})
@@ -51,10 +59,11 @@ def events(path):
         if (kind=='event_msg' and typ=='user_message') or (kind=='response_item' and typ=='message' and p.get('role')=='user'):
             if millis(at)>millis(last_user): last_user=at
         if kind=='event_msg':
-            if typ in ('task_started','turn_started'): state,last='running',at
+            if typ in ('task_started','turn_started'): state,last,error='running',at,''
             if typ in ('task_complete','task_completed','turn_completed'): state,last='completed',at
             if typ in ('turn_aborted','task_interrupted'): state,last='interrupted',at
             if typ in ('approval_requested','request_user_input'): state,last='attention',at
+            if p.get('error'): state,last,error='error',at,error_text(p.get('error')) or 'Task failed'
             if state=='running' and typ=='token_count': last=at
         if kind=='response_item' and typ=='message' and p.get('role')=='assistant':
             body='\n'.join(c.get('text','') for c in p.get('content',[]) if c.get('type') in ('text','output_text'))
@@ -62,11 +71,12 @@ def events(path):
                 messages.append({'at':at,'text':body[:16000],'phase':'final' if p.get('phase')=='final_answer' else p.get('phase','unknown')});revision=at or body[-80:]
             if p.get('phase') in ('final','final_answer'): state,last='completed',at
             if p.get('phase')=='commentary': state,last='running',at
+            if capacity_error.search(body): state,last,error='error',at,body[:16000]
         if kind=='response_item' and typ in ('function_call','custom_tool_call','reasoning'): state,last='running',at
     if state=='running' and time.time()*1000-millis(last)>120000: state='unknown'
     messages=list({(m['at'],m['text']):m for m in messages}.values())
     messages.sort(key=lambda m: m['at'] or '')
-    value={'state':state,'lastAt':last,'lastUserAt':last_user,'parentId':parent,'messages':messages[-8:],'revision':revision}
+    value={'state':state,'lastAt':last,'lastUserAt':last_user,'parentId':parent,'messages':messages[-8:],'revision':revision, **({'error':error} if error else {})}
     cache[str(resolved)]=((info.st_mtime_ns,info.st_size),value)
     return value
 
