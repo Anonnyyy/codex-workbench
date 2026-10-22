@@ -1,4 +1,4 @@
-import {labels,unread,displayTitle} from './model.js';
+import {labels,unread,displayTitle,projectLocation} from './model.js';
 import {taskNotification} from './capacityRetry.js';
 
 const prefix='codex-workbench:';
@@ -53,8 +53,10 @@ export function createSystemNotifier({registration,enabled=()=>true}){
         if(!enabled())return;
         const tag=prefix+task.key,shown=surviving.get(tag);
         if(shown?.data?.revision===task.revision&&shown.data.notice===notice)continue;
-        await worker.showNotification('Codex 工作台',{
-          body:`${displayTitle(task,snapshot.meta)} · ${labels[notice]}`,
+        const deviceName=snapshot.devices.find(d=>d.id===task.deviceId)?.name||task.deviceName||(task.deviceId==='local'?'本机':'未知设备');
+        const folder=projectLocation(task.cwd).name;
+        await worker.showNotification(`Codex 工作台 · ${deviceName}`,{
+          body:`文件夹：${folder}\n${displayTitle(task,snapshot.meta)} · ${labels[notice]}`,
           icon:'/workbench.png',tag,requireInteraction:true,
           data:{key:task.key,revision:task.revision,notice},
         });

@@ -18,10 +18,14 @@ function registry(){
 
 test('completion and questions use one system notification per reply and read closes only that reply',async()=>{
   const r=registry(),update=createSystemNotifier(r);
-  await update(snapshot([task(),task('local:b')]));
-  const a=completed(),b=task('local:b',{state:'attention',attentionKind:'question'});
+  await update(snapshot([task(),task('remote:b',{deviceId:'remote'})]));
+  const a=completed('local:a',{cwd:'C:\\Users\\demo\\Projects\\论文修改\\'}),b=task('remote:b',{deviceId:'remote',deviceName:'5090',cwd:'/data/projects/grail/',state:'attention',attentionKind:'question'});
   await update(snapshot([a,b]));
   assert.equal(r.calls.length,2);assert.equal(r.calls[1].data.notice,'question');
+  assert.equal(r.calls[0].title,'Codex 工作台 · 本机');
+  assert.equal(r.calls[0].body,'文件夹：论文修改\nTask · 已完成');
+  assert.equal(r.calls[1].title,'Codex 工作台 · 5090');
+  assert.equal(r.calls[1].body,'文件夹：grail\nTask · 等待你回答');
   await update(snapshot([a,b]));assert.equal(r.calls.length,2);
   await update(snapshot([a,b],{[a.key]:{readRevision:a.revision}}));
   assert.equal(r.items[0].closed,true);assert.equal(r.items[1].closed,false);
