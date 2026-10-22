@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
-import {createSystemNotifier} from '../src/systemNotifications.js';
+import {createSystemNotifier,closeSystemNotifications,systemNotificationsEnabled,setSystemNotificationsEnabled} from '../src/systemNotifications.js';
 
 const task=(key='local:a',extra={})=>({key,id:key,deviceId:'local',online:true,title:'Task',revision:'r1',turnId:'turn1',state:'running',turnStatus:'inProgress',...extra});
 const completed=(key='local:a',extra={})=>task(key,{state:'completed',turnStatus:'completed',revision:'r2',...extra});
@@ -46,6 +46,58 @@ test('capacity errors and denied notification permission never produce notificat
   let touched=false;
   const disabled=createSystemNotifier({enabled:()=>false,registration:async()=>{touched=true;throw Error('must not register');}});
   await disabled(snapshot([task()]));await disabled(snapshot([completed()]));assert.equal(touched,false);
+});
+
+test('the app off preference survives reload even when browser permission remains granted',()=>{
+  const saved=new Map(),storage={getItem:key=>saved.get(key)??null,setItem:(key,value)=>saved.set(key,value)};
+  const page=()=>({Notification:{permission:'granted'},localStorage:storage});
+  assert.equal(systemNotificationsEnabled(page()),true);
+  setSystemNotificationsEnabled(false,storage);
+  assert.equal(systemNotificationsEnabled(page()),false);
+  setSystemNotificationsEnabled(true,storage);
+  assert.equal(systemNotificationsEnabled(page()),true);
+  assert.equal(systemNotificationsEnabled({Notification:{permission:'denied'},localStorage:storage}),false);
+});
+
+test('turning reminders off closes task and test notifications without touching unrelated notifications',async()=>{
+  const r=registry(),worker=await r.registration();
+  for(const tag of ['codex-workbench:local:a','codex-workbench-test','another-app'])await worker.showNotification('test',{tag});
+  await closeSystemNotifications(worker);
+  assert.deepEqual(r.items.map(n=>n.closed),[true,true,false]);
+});
+
+test('turning reminders back on does not replay completions received while off',async()=>{
+  let enabled=true;
+  const r=registry(),update=createSystemNotifier({...r,enabled:()=>enabled});
+  await update(snapshot([task()]));enabled=false;
+  await update(snapshot([completed()]));enabled=true;
+  await update(snapshot([completed()]));assert.equal(r.calls.length,0);
+  await update(snapshot([completed('local:a',{revision:'r3',turnId:'turn2'})]));
+  assert.equal(r.calls.length,1);
+});
+
+test('disabling while registration is pending cancels the queued notification',async()=>{
+  let enabled=true,release,entered;
+  const ready=new Promise(resolve=>{entered=resolve;}),r=registry();
+  const worker=await r.registration();
+  let delay=false;
+  const update=createSystemNotifier({enabled:()=>enabled,registration:async()=>{
+    if(delay){entered();await new Promise(resolve=>{release=resolve;});}return worker;
+  }});
+  await update(snapshot([task()]));delay=true;
+  const pending=update(snapshot([completed()]));await ready;
+  enabled=false;release();await pending;assert.equal(r.calls.length,0);
+});
+
+test('disabling while a toast is being created closes it after creation finishes',async()=>{
+  let enabled=true,release,entered;
+  const ready=new Promise(resolve=>{entered=resolve;}),r=registry(),worker=await r.registration();
+  const show=worker.showNotification;
+  worker.showNotification=async(...args)=>{entered();await new Promise(resolve=>{release=resolve;});await show(...args);};
+  const update=createSystemNotifier({...r,enabled:()=>enabled});
+  await update(snapshot([task()]));const pending=update(snapshot([completed()]));await ready;
+  enabled=false;await closeSystemNotifications(worker);release();await pending;
+  assert.equal(r.calls.length,1);assert.equal(r.items[0].closed,true);
 });
 
 test('notification click closes the toast and opens the corresponding task in an existing window',async()=>{

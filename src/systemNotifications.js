@@ -2,6 +2,23 @@ import {labels,unread,displayTitle} from './model.js';
 import {taskNotification} from './capacityRetry.js';
 
 const prefix='codex-workbench:';
+export const notificationPreferenceKey='codex-workbench-system-notifications-v1';
+
+export function systemNotificationsEnabled(environment=globalThis){
+  if(environment.Notification?.permission!=='granted')return false;
+  try{return environment.localStorage?.getItem(notificationPreferenceKey)!=='off';}catch{return true;}
+}
+
+export function setSystemNotificationsEnabled(enabled,storage=globalThis.localStorage){
+  storage.setItem(notificationPreferenceKey,enabled?'on':'off');
+}
+
+export async function closeSystemNotifications(worker){
+  if(!worker)return;
+  for(const notification of await worker.getNotifications()){
+    if(notification.tag?.startsWith(prefix)||notification.tag==='codex-workbench-test')notification.close();
+  }
+}
 
 // The service worker owns notifications, so a refreshed page can still close
 // the exact reply that was read. There is no second, in-page reminder surface.
@@ -23,6 +40,7 @@ export function createSystemNotifier({registration,enabled=()=>true}){
     queue=queue.catch(()=>{}).then(async()=>{
       if(!enabled())return;
       const worker=await registration();
+      if(!enabled())return;
       const active=await worker.getNotifications();
       const surviving=new Map();
       for(const notification of active){
@@ -32,6 +50,7 @@ export function createSystemNotifier({registration,enabled=()=>true}){
         else surviving.set(notification.tag,notification);
       }
       for(const {task,notice} of arrivals){
+        if(!enabled())return;
         const tag=prefix+task.key,shown=surviving.get(tag);
         if(shown?.data?.revision===task.revision&&shown.data.notice===notice)continue;
         await worker.showNotification('Codex 工作台',{
@@ -39,6 +58,8 @@ export function createSystemNotifier({registration,enabled=()=>true}){
           icon:'/workbench.png',tag,requireInteraction:true,
           data:{key:task.key,revision:task.revision,notice},
         });
+        // A user can disable reminders while the browser is creating a toast.
+        if(!enabled()){await closeSystemNotifications(worker);return;}
       }
     });
     return queue;
