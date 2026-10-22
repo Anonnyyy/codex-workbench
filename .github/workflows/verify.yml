@@ -28,6 +28,12 @@ jobs:
           python-version: '3.12'
       - run: npm ci
       - run: npm test
+      - name: Test SSH capacity recovery
+        run: python -m unittest discover -s tests -p remote_capacity_retry_test.py
+      - name: Test SSH message queues
+        run: python -m unittest discover -s tests -p remote_queue_send_test.py
+      - name: Test SSH snapshot parsing
+        run: python -m unittest discover -s tests -p remote_snapshot_test.py
       - run: npm run build
       - name: Build verified runtime archive
         run: python scripts/package_release.py --target ${{ matrix.target }}

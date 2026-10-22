@@ -31,7 +31,7 @@ main>.tabs .bulk-read { margin-left:auto; background:transparent; color:var(--gr
 .recent-toggle,.recent-close { display:none; }
 @media(max-width:1200px) {
   .recent-toggle { display:inline-flex; font-size:12px; }
-  .timeline-open .recent-inspector { display:block; position:fixed; top:0; bottom:38px; right:0; width:360px; z-index:3; box-shadow:-10px 0 35px #10211f17; }
+  .timeline-open .recent-inspector { display:block; position:fixed; top:0; bottom:38px; right:0; width:min(var(--inspector-width,360px),85vw); z-index:3; box-shadow:-10px 0 35px #10211f17; }
   .recent-close { display:inline-flex; margin-left:auto; }
 }
 @media(max-width:650px) {

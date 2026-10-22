@@ -1,6 +1,6 @@
 import React, {useEffect, useMemo, useState} from 'react';
 import {useWorkbench} from './useWorkbench';
-import {unread, groupProjects, projectIsActive} from './model';
+import {unread, groupProjects, projectIsActive, displayTitle} from './model';
 import {Sidebar, Inspector, Modal, DeviceDialog, Search, Monitor, Trash2} from './components';
 import ProjectTree from './ProjectTree';
 import RecentTimeline from './RecentTimeline';
@@ -17,6 +17,38 @@ export default function App() {
   const [timelineOpen,setTimelineOpen]=useState(false);
   const [modal, setModal] = useState(()=>new URLSearchParams(location.search).get('panel')==='queue'?'queues':null);
   const [collapsed, setCollapsed] = useState(new Set());
+  const [inspectorWidth, setInspectorWidth] = useState(() => {
+    const viewport = typeof window === 'undefined' ? 1600 : window.innerWidth;
+    const sidebar = viewport >= 1450 ? 276 : 230;
+    const minimumMain = viewport >= 1450 ? 600 : 480;
+    const max = Math.min(720, Math.max(320, viewport - sidebar - minimumMain - 16));
+    try {
+      const saved = Number(localStorage.getItem('codex-workbench:inspector-width:v1'));
+      if (Number.isFinite(saved) && saved >= 320) return Math.min(max, saved);
+    } catch {}
+    return Math.min(max, viewport >= 1450 ? 412 : 345);
+  });
+  useEffect(() => {
+    try { localStorage.setItem('codex-workbench:inspector-width:v1', String(inspectorWidth)); } catch {}
+  }, [inspectorWidth]);
+  useEffect(() => {
+    function keepInspectorInView() {
+      const viewport = window.innerWidth;
+      const sidebar = document.querySelector('.sidebar')?.getBoundingClientRect().width ?? (viewport >= 1450 ? 276 : 230);
+      const minimumMain = viewport >= 1450 ? 600 : 480;
+      const max = Math.min(720, Math.max(320, viewport - sidebar - minimumMain - 16));
+      setInspectorWidth(current => Math.min(max, Math.max(320, current)));
+    }
+    window.addEventListener('resize', keepInspectorInView);
+    return () => window.removeEventListener('resize', keepInspectorInView);
+  }, []);
+  function resizeInspector(width) {
+    const viewport = typeof window === 'undefined' ? 1600 : window.innerWidth;
+    const sidebar = document.querySelector('.sidebar')?.getBoundingClientRect().width ?? (viewport >= 1450 ? 276 : 230);
+    const minimumMain = viewport >= 1450 ? 600 : 480;
+    const max = Math.min(720, Math.max(320, viewport - sidebar - minimumMain - 16));
+    setInspectorWidth(Math.min(max, Math.max(320, width)));
+  }
   const folder = data.folders.find(f => f.id === view);
   const title = folder?.name ?? ({all:'全部任务', unread:'未读', running:'生成中', attention:'需要处理', unfiled:'未分类'}[view])
     ?? data.devices.find(d => 'device:' + d.id === view)?.name ?? '全部任务';
@@ -24,10 +56,10 @@ export default function App() {
     const list = data.threads.filter(t => {
       const match = v => v === 'all' || v === 'active' || v === 'unread' && unread(t, data.meta)
         || v === 'running' && t.online && t.state === 'running'
-        || v === 'attention' && t.online && ['attention', 'interrupted'].includes(t.state);
+        || v === 'attention' && t.online && ['attention', 'interrupted', 'error'].includes(t.state);
       const scope = folder ? data.meta[t.key]?.folderId === view : view === 'unfiled' ? !data.meta[t.key]?.folderId
         : view.startsWith('device:') ? 'device:' + t.deviceId === view : match(view);
-      return scope && match(tab) && `${t.title} ${t.cwd} ${t.deviceName}`.toLowerCase().includes(query.toLowerCase());
+      return scope && match(tab) && `${displayTitle(t,data.meta)} ${t.cwd} ${t.deviceName}`.toLowerCase().includes(query.toLowerCase());
     });
     const devices=view.startsWith('device:')?data.devices.filter(d=>'device:'+d.id===view):data.devices;
     const grouped=groupProjects(list,devices,data.meta,{includeOpenProjects:(view==='all'||view.startsWith('device:'))&&['all','active'].includes(tab)});
@@ -56,7 +88,7 @@ export default function App() {
     }
   },[requestedTask,data]);
 
-  return <div className={'app ' + (task ? 'detail-open' : '')+(timelineOpen&&!task?' timeline-open':'')}>
+  return <div className={'app ' + (task ? 'detail-open' : '')+(timelineOpen&&!task?' timeline-open':'')} style={{'--inspector-width': `${inspectorWidth}px`}}>
     <Sidebar data={data} view={view} setView={v => {setView(v); setTab(v==='all'||v.startsWith('device:')?'active':'all');setSelected(null);}} action={action}
       onFolder={() => setModal('folder')} onDevices={() => setModal('device')} notifications={notifications} notificationsEnabled={notificationsEnabled}/>
     <main>
@@ -82,7 +114,7 @@ export default function App() {
         collapsed={collapsed} onCollapse={toggleBranch} onMove={(key,folderId) => action('meta',{key,folderId})}
         onProjectMove={(key,pinned)=>action('project',{key,pinned})}/>
     </main>
-    {task?<Inspector task={task} data={data} action={action} onClose={() => setSelected(null)}/>:<RecentTimeline data={data} onSelect={openTask} onClose={()=>setTimelineOpen(false)}/>}
+    {task?<Inspector task={task} data={data} action={action} onClose={() => setSelected(null)} inspectorWidth={inspectorWidth} onResize={resizeInspector}/>:<RecentTimeline data={data} onSelect={openTask} onClose={()=>setTimelineOpen(false)} inspectorWidth={inspectorWidth} onResize={resizeInspector}/>}
     <footer>
       <span><i className={'dot ' + (!connected ? 'offline' : '')}/>{connected ? '工作台已连接' : '正在重连工作台…'}<b/>{data.devices.filter(d => d.online).length} 台设备在线</span>
       <span>每台最近 300 条 · 每 2–3 秒同步{data.updatedAt && ' · ' + new Date(data.updatedAt).toLocaleTimeString('zh-CN')}</span>

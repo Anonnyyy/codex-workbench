@@ -1,4 +1,4 @@
-import {labels,unread} from './model.js';
+import {labels,unread,displayTitle} from './model.js';
 import {taskNotification} from './capacityRetry.js';
 
 const prefix='codex-workbench:';
@@ -35,7 +35,7 @@ export function createSystemNotifier({registration,enabled=()=>true}){
         const tag=prefix+task.key,shown=surviving.get(tag);
         if(shown?.data?.revision===task.revision&&shown.data.notice===notice)continue;
         await worker.showNotification('Codex 工作台',{
-          body:`${task.title} · ${labels[notice]}`,
+          body:`${displayTitle(task,snapshot.meta)} · ${labels[notice]}`,
           icon:'/workbench.png',tag,requireInteraction:true,
           data:{key:task.key,revision:task.revision,notice},
         });

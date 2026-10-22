@@ -1,4 +1,42 @@
-export const labels={running:'生成中',completed:'已完成',question:'等待你回答',attention:'需要处理',interrupted:'已中断',unknown:'待确认'};
+export const labels={running:'生成中',completed:'已完成',question:'等待你回答',attention:'需要处理',interrupted:'已中断',error:'出错',unknown:'待确认'};
+const capacityError=/\b(?:model\s+at\s+capacity|at\s+capacity|rate[\s_-]*limit(?:ed)?|quota\s+(?:exceeded|exhausted)|(?:service|server)\s+unavailable|overloaded)\b/i;
+const ideContextMarker='# Context from my IDE setup:';
+const reviewHistoryPrefix='the following is the codex agent history whose request action you are assessing';
+
+export function isReviewHistoryThread(threadOrTitle){
+  const raw=typeof threadOrTitle==='string'?threadOrTitle:threadOrTitle?.title;
+  return String(raw??'').normalize('NFKC').replace(/\s+/g,' ').trim().toLowerCase().startsWith(reviewHistoryPrefix);
+}
+
+export function automaticTitle(rawTitle){
+  const raw=String(rawTitle??'').replace(/\r\n/g,'\n').trim();
+  if(!raw)return '未命名任务';
+  const request=raw.match(/##\s*My request\s*:\s*/i);
+  let candidate=request?raw.slice(request.index+request[0].length):raw;
+  if(!request&&candidate.startsWith(ideContextMarker))candidate=candidate.slice(ideContextMarker.length);
+  candidate=candidate.replace(/^#+\s*/,'').replace(/\s+/g,' ').trim();
+  const sentence=candidate.match(/^(.+?)(?:[。！？!?；;，,]|\s+在(?=\/?[~A-Za-z0-9]))/)?.[1]??candidate;
+  return sentence.length>80?sentence.slice(0,79).trimEnd()+'…':sentence||'未命名任务';
+}
+
+export function displayTitle(thread,meta={}){
+  const custom=String(meta?.[thread?.key]?.title??'').replace(/\s+/g,' ').trim();
+  return custom||automaticTitle(thread?.title);
+}
+
+function errorSignature(thread){
+  if(thread?.error)return String(thread.error);
+  for(const message of thread?.messages??[])if(message?.phase==='error'||capacityError.test(String(message?.text??'')))return String(message.text);
+  return '';
+}
+export function notificationReason(previous,current){
+  if(!previous||!current||!current.online)return null;
+  const error=errorSignature(current),oldError=errorSignature(previous);
+  if(error&&error!==oldError)return {kind:'error',label:'出错',detail:error.slice(0,180)};
+  if(current.state==='completed'&&previous.state!=='completed')return {kind:'completed',label:'已完成'};
+  if(current.state==='unknown'&&previous.state==='running')return {kind:'stuck',label:'长时间无响应'};
+  return null;
+}
 export function invocationTime(thread){return Date.parse(thread.lastUserAt)||Math.max(Number(thread.updatedAt)||0,Date.parse(thread.lastAt)||0);}
 // Older collectors omitted session source. Limit compatibility grouping to
 // repeated, unrenamed ralplan IDE prompts under the same recorded parent.
