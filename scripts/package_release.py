@@ -19,7 +19,9 @@ for filename in ['package.json','package-lock.json','LICENSE','README.md','THIRD
     shutil.copy2(root/filename, stage/filename)
 for folder in ['dist','public','server']:
     shutil.copytree(root/folder,stage/folder,ignore=shutil.ignore_patterns('__pycache__','*.pyc','*.log'))
-(stage/'src').mkdir(); shutil.copy2(root/'src/model.js',stage/'src/model.js')
+(stage/'src').mkdir()
+for filename in ['model.js','capacityRetry.js','messageQueue.js']:
+    shutil.copy2(root/'src'/filename,stage/'src'/filename)
 (stage/'scripts').mkdir()
 for filename in ['launch.mjs','desktop-shortcut.ps1']:
     shutil.copy2(root/'scripts'/filename,stage/'scripts'/filename)

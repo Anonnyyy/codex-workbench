@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {parseEvents,createCollector} from '../server/collector.mjs';
-import {unread,treeRows,parentOf,projectLocation,groupProjects,markReadBefore,markCompletedRead,recentConversations} from '../src/model.js';
+import {unread,unreadTone,unreadSummary,treeRows,parentOf,projectLocation,groupProjects,markReadBefore,markCompletedRead,recentConversations} from '../src/model.js';
 import {nativeReadSnapshot} from '../server/native-read-state.mjs';
 import {createStore} from '../server/store.mjs';
 import {mkdtempSync,rmSync,writeFileSync,appendFileSync,statSync,utimesSync} from 'node:fs';
@@ -74,6 +74,29 @@ test('read state is independent of running state and new progress becomes unread
  const t={key:'a',state:'running',revision:'r1'};const meta={a:{readRevision:'r1'}};
  assert.equal(unread(t,meta),false);assert.equal(unread({...t,revision:'r2'},meta),true);
  assert.equal(unread(t,{a:{readRevision:'r1',forceUnread:true}}),true);
+});
+test('unread indicator changes from working red to completed green and clears when read',()=>{
+ const running={key:'task',state:'running',revision:'r1'};
+ const completed={...running,state:'completed'};
+ assert.equal(unreadTone(running,{}),'working');
+ assert.equal(unreadTone(completed,{}),'done');
+ assert.equal(unreadTone(completed,{task:{readRevision:'r1'}}),null);
+ assert.deepEqual(unreadSummary([running,completed],{}),{count:2,tone:'working'});
+ assert.deepEqual(unreadSummary([completed],{}),{count:1,tone:'done'});
+ assert.deepEqual(unreadSummary([completed],{task:{readRevision:'r1'}}),{count:0,tone:null});
+});
+test('a new task start and a later confirmation request advance unread revision',()=>{
+ const start='2026-10-16T06:55:08.576Z',reply='2026-10-16T06:51:05.967Z',attention='2026-10-16T06:53:21.412Z';
+ const started=parseEvents(serialize([{timestamp:start,type:'event_msg',payload:{type:'task_started'}}]),Date.parse(start));
+ assert.equal(started.revision,start);
+ assert.equal(unread({key:'started',...started},{started:{nativeReadRevision:reply}}),true);
+ assert.equal(unread({key:'started',...started},{started:{readRevision:start}}),false);
+ const awaiting=parseEvents(serialize([{...msg('final'),timestamp:reply},{timestamp:attention,type:'event_msg',payload:{type:'request_user_input'}}]),Date.parse(attention));
+ assert.equal(awaiting.revision,attention);
+ assert.equal(unread({key:'awaiting',...awaiting},{awaiting:{nativeReadRevision:reply}}),true);
+ assert.equal(unread({key:'awaiting',...awaiting},{awaiting:{readRevision:attention}}),false);
+ const copied=parseEvents(serialize([{timestamp:start,type:'event_msg',payload:{type:'task_started'}},{...msg('final'),timestamp:reply}]),Date.parse(start));
+ assert.equal(copied.revision,start);
 });
 test('tree supports manual unlinking, cycles and collapse without disappearing roots',()=>{
  const t=[{key:'a'},{key:'b',parentKey:'a'},{key:'c',parentKey:'b'}];

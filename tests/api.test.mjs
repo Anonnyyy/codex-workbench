@@ -20,6 +20,10 @@ test('HTTP API rejects foreign origins, persists organization and prevents paren
   for(let i=0;i<40;i++){try{state=await fetch(base+'/api/state').then(r=>r.json());if(state.threads.length===2)break;}catch{}await new Promise(r=>setTimeout(r,100));}
   assert.equal(state.threads.length,2);
   assert.equal((await request('folders',{name:'forbidden'},'https://external.example')).status,403);
+  assert.equal((await request('message-queue',{key:'local:a',operation:'add',text:'forbidden'},'https://external.example')).status,403);
+  assert.equal((await request('message-queue',{key:'local:a',operation:'add',text:'unsupported'})).status,400);
+  assert.equal((await request('device/capacity-retry',{id:'local',enabled:true})).status,400);
+  assert.equal((await request('device/capacity-retry',{id:'missing',enabled:true},'https://external.example')).status,403);
   assert.equal((await request('folders',{name:'Work'})).status,200);
   const projectKey='project:local:'+projectLocation(dir).identity;
   assert.equal((await request('project',{key:projectKey,pinned:true})).status,200);

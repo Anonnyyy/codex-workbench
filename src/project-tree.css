@@ -51,6 +51,11 @@ main > .tabs { flex-wrap:wrap; }
 .folder-title strong { min-width:0; }
 .nav span.folder-title { display:flex; flex:1; }
 .unread-light { display:inline-block; width:8px; height:8px; border-radius:50%; background:#e33d42; box-shadow:0 0 0 3px #e33d4215; flex:0 0 8px; }
+.unread-light.done { background:#279c58; box-shadow:0 0 0 3px #279c581a; }
+.unread.working .dot { background:#e33d42; }
+.unread.done .dot { background:#279c58; }
+.badges .unread.working { color:#cf3037; }
+.badges .unread.done { color:#168449; }
 .project-drop-zone { margin:10px 0; border:1px dashed #43815c; border-radius:5px; padding:15px; color:var(--green); background:#eff7f1; font-size:12px; }
 .project-drop-active { outline:2px dashed var(--green); background:#deefe3!important; }
 .tree-notice { margin:0 0 10px; font-size:12px; color:var(--green); }

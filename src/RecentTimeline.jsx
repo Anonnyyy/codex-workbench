@@ -1,7 +1,9 @@
 import React,{useMemo,useState} from 'react';
 import {Clock3,ChevronDown,X} from 'lucide-react';
-import {recentConversations,invocationTime,projectLocation,unread} from './model';
+import {recentConversations,invocationTime,projectLocation,unreadTone} from './model';
 import {Status,UnreadLight} from './components';
+import {CapacityRetryBadge} from './CapacityRetrySettings';
+import {MessageQueueBadge} from './MessageQueuePanel';
 import {useDisplayPreference,validDisplayCount,displayCounts} from './displayPreferences';
 
 function dateKey(time){if(!time)return '时间未知';return new Date(time).toLocaleDateString('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit'});}
@@ -18,11 +20,11 @@ export default function RecentTimeline({data,onSelect,onClose}){
     <p className="recent-caption">所有设备 · 按最近调用时间排列</p>
     <div className="recent-controls"><span>{sorted.length} 个会话</span><label>显示<select aria-label="时间线展示条数" value={count} onChange={e=>{setPreference(validDisplayCount(e.target.value,20));setExtra(0);}}>{displayCounts.map(n=><option key={n} value={n}>{n===0?'全部':n+' 条'}</option>)}</select></label></div>
     <div className="recent-days">{days.map(day=><section className="recent-day" key={day.key} aria-label={dateLabel(day.key)+'的会话'}><h3>{dateLabel(day.key)}</h3><ol>{day.threads.map(({thread,at})=><li key={thread.key} data-recent-key={thread.key}>
-      <span className={'recent-marker '+(unread(thread,data.meta)?'has-unread':'')}/>
+      {unreadTone(thread,data.meta)&&<span className={'recent-marker '+unreadTone(thread,data.meta)}/>}
       <button className="recent-entry" aria-label={'查看最近会话 '+thread.deviceName+' '+thread.title} onClick={()=>onSelect(thread.key)}>
         <span className="recent-entry-time"><time dateTime={at?new Date(at).toISOString():undefined}>{at?new Date(at).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'}):'—'}</time><span className="recent-location" title={thread.deviceName+' · '+thread.cwd}>{thread.deviceName} · {projectLocation(thread.cwd).name}</span></span>
-        <span className="recent-entry-title"><strong>{thread.title}</strong><UnreadLight count={unread(thread,data.meta)?1:0}/></span>
-        <Status state={thread.state} online={thread.online}/>
+        <span className="recent-entry-title"><strong>{thread.title}</strong><UnreadLight tone={unreadTone(thread,data.meta)}/></span>
+        <span className="recent-entry-status"><Status state={thread.state} online={thread.online}/><CapacityRetryBadge task={thread} data={data}/><MessageQueueBadge task={thread} data={data}/></span>
       </button>
     </li>)}</ol></section>)}</div>
     {!sorted.length&&<p className="recent-empty">同步后的会话会按时间显示在这里。</p>}

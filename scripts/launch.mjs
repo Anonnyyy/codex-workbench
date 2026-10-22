@@ -3,7 +3,7 @@ import {mkdirSync,openSync,closeSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
 import {join} from 'node:path';
 const root=fileURLToPath(new URL('..',import.meta.url));
-const port=Number(process.env.PORT||4310),url=`http://127.0.0.1:${port}`;
+const port=Number(process.env.PORT||24319),url=`http://127.0.0.1:${port}`;
 async function alive(){try{const r=await fetch(url+'/api/health',{signal:AbortSignal.timeout(1000)});return r.ok&&(await r.json()).ok===true;}catch{return false;}}
 if(!await alive()){
  const dir=process.env.WORKBENCH_DATA||join(root,'.workbench');mkdirSync(dir,{recursive:true});

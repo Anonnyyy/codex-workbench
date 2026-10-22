@@ -1,17 +1,26 @@
-import {useEffect,useRef,useState} from 'react';
-import {labels} from './model';
+import {useEffect,useState} from 'react';
+import {conversationTasks} from './model';
+import {createSystemNotifier,notificationWorker} from './systemNotifications';
 const initial={threads:[],devices:[],folders:[],meta:{}};
 export function useWorkbench(){
   const [data,setData]=useState(initial),[connected,setConnected]=useState(false),[toast,setToast]=useState('');
-  const previous=useRef(null),notify=useRef(false);
-  useEffect(()=>{let lastMessage=0;const events=new EventSource('/api/events');events.onerror=()=>setConnected(false);events.onmessage=e=>{
-    const next=JSON.parse(e.data);
+  const [notificationsEnabled,setNotificationsEnabled]=useState(()=>globalThis.Notification?.permission==='granted');
+  const [reminderToOpen,setReminderToOpen]=useState(null);
+  // Discard the retired in-page reminder queue.
+  useEffect(()=>{
+    try{localStorage.removeItem('codex-workbench-reminders-v1');}catch{}
+  },[]);
+  useEffect(()=>{
+    const sync=()=>setNotificationsEnabled(globalThis.Notification?.permission==='granted');
+    const open=event=>{if(event.data?.type==='open-reminder'&&typeof event.data.key==='string')setReminderToOpen(event.data.key);};
+    window.addEventListener('focus',sync);navigator.serviceWorker?.addEventListener('message',open);
+    return()=>{window.removeEventListener('focus',sync);navigator.serviceWorker?.removeEventListener('message',open);};
+  },[]);
+  useEffect(()=>{let lastMessage=0,reportedError=false;const notify=createSystemNotifier({registration:notificationWorker,enabled:()=>globalThis.Notification?.permission==='granted'});const events=new EventSource('/api/events');events.onerror=()=>setConnected(false);events.onmessage=e=>{
+    const snapshot=JSON.parse(e.data),next={...snapshot,threads:conversationTasks(snapshot.threads)};
     lastMessage=Date.now();setConnected(true);
-    if(previous.current){for(const t of next.threads){const old=previous.current.get(t.key);if(old&&t.online&&t.state!==old.state&&['completed','attention','interrupted'].includes(t.state)){
-      setToast(`${t.title} · ${labels[t.state]}`);
-      if(notify.current&&globalThis.Notification?.permission==='granted')new Notification('Codex 工作台',{body:`${t.title} · ${labels[t.state]}`});
-    }}}
-    previous.current=new Map(next.threads.map(t=>[t.key,t]));setData(next);
+    setData(next);
+    void notify(next).then(()=>{reportedError=false;}).catch(error=>{if(!reportedError)setToast('系统提醒暂不可用：'+error.message);reportedError=true;});
   };const watchdog=setInterval(()=>{if(Date.now()-lastMessage>15000)setConnected(false);},3000);return()=>{clearInterval(watchdog);events.close();};},[]);
   useEffect(()=>{if(!toast)return;const timer=setTimeout(()=>setToast(''),5500);return()=>clearTimeout(timer);},[toast]);
   async function action(path,body){try{const r=await fetch('/api/'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const result=await r.json();if(!r.ok)throw new Error(result.error);if(result.message)setToast(result.message);return true;}catch(e){setToast(e.message);return false;}}
@@ -20,13 +29,23 @@ export function useWorkbench(){
     if(!loaded)return;
     const controller=new AbortController();let checking=false;
     const timer=setInterval(async()=>{
-      if(checking||document.querySelector('dialog[open]')||document.visibilityState!=='visible')return;
+      if(checking||document.querySelector('dialog[open]')||document.querySelector('[data-queue-draft="true"]')||document.visibilityState!=='visible')return;
       checking=true;
-      try{const res=await fetch('/',{cache:'no-store',signal:controller.signal});if(!res.ok)return;const html=await res.text(),src=html.match(/<script[^>]*\bsrc="([^"]+)"/)?.[1];if(src&&new URL(src,location.href).href!==loaded&&!document.querySelector('dialog[open]'))location.reload();}catch{}finally{checking=false;}
+      try{const res=await fetch('/',{cache:'no-store',signal:controller.signal});if(!res.ok)return;const html=await res.text(),src=html.match(/<script[^>]*\bsrc="([^"]+)"/)?.[1];if(src&&new URL(src,location.href).href!==loaded&&!document.querySelector('dialog[open]')&&!document.querySelector('[data-queue-draft="true"]'))location.reload();}catch{}finally{checking=false;}
     },15000);
     return()=>{clearInterval(timer);controller.abort();};
   },[]);
-  async function notifications(){if(!globalThis.Notification){setToast('当前浏览器不支持桌面通知，仍会显示应用内提醒');return;}const p=await Notification.requestPermission();notify.current=p==='granted';setToast(notify.current?'已开启桌面提醒，请保持工作台运行':'未开启桌面通知，应用内提醒仍可用');}
+  async function notifications(){
+    try{
+      if(!globalThis.Notification)throw new Error('请使用 Microsoft Edge 打开工作台');
+      const permission=Notification.permission==='default'?await Notification.requestPermission():Notification.permission;
+      setNotificationsEnabled(permission==='granted');
+      if(permission!=='granted'){setToast('请在浏览器的网站权限中允许通知');return;}
+      const worker=await notificationWorker();
+      await worker.showNotification('Codex 工作台 · 测试提醒',{body:'任务完成或等待你回答时，将使用这种系统通知提醒。',icon:'/workbench.png',tag:'codex-workbench-test',requireInteraction:false});
+      setToast('已发送系统测试通知');
+    }catch(error){setToast('系统提醒暂不可用：'+error.message);}
+  }
   const visibleData=connected?data:{...data,devices:data.devices.map(d=>({...d,online:false})),threads:data.threads.map(t=>({...t,online:false}))};
-  return {data:visibleData,connected,toast,action,notifications};
+  return {data:visibleData,connected,toast,action,notifications,notificationsEnabled,reminderToOpen,clearReminderToOpen:()=>setReminderToOpen(null)};
 }

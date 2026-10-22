@@ -12,8 +12,9 @@ main>.tabs .bulk-read { margin-left:auto; background:transparent; color:var(--gr
 .recent-inspector .recent-day h3 { margin:22px 0 13px; font-size:12px; font-weight:650; color:#6d7e73; }
 .recent-day ol { list-style:none; padding:0; margin:0 0 0 5px; border-left:1px solid #cbd8cf; }
 .recent-day li { position:relative; padding:0 0 12px 18px; }
-.recent-marker { position:absolute; left:-4px; top:17px; width:7px; height:7px; border-radius:50%; background:#a5b6aa; box-shadow:0 0 0 4px var(--soft); }
-.recent-marker.has-unread { background:#e33d42; }
+.recent-marker { position:absolute; left:-4px; top:17px; width:7px; height:7px; border-radius:50%; box-shadow:0 0 0 4px var(--soft); }
+.recent-marker.working { background:#e33d42; }
+.recent-marker.done { background:#279c58; }
 .recent-entry { display:flex; flex-direction:column; align-items:stretch; gap:7px; width:100%; padding:10px 11px 12px; border:1px solid transparent; border-radius:7px; background:transparent; text-align:left; }
 .recent-entry:hover { background:white; border-color:#dce5de; }
 .recent-entry-time { display:flex; align-items:center; gap:8px; color:#708175; font-size:12px; }

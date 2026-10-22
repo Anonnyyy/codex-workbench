@@ -1,5 +1,29 @@
-export const labels={running:'生成中',completed:'已完成',attention:'需要处理',interrupted:'已中断',unknown:'待确认'};
+export const labels={running:'生成中',completed:'已完成',question:'等待你回答',attention:'需要处理',interrupted:'已中断',unknown:'待确认'};
 export function invocationTime(thread){return Date.parse(thread.lastUserAt)||Math.max(Number(thread.updatedAt)||0,Date.parse(thread.lastAt)||0);}
+// Older collectors omitted session source. Limit compatibility grouping to
+// repeated, unrenamed ralplan IDE prompts under the same recorded parent.
+// Explicit source metadata always wins; ordinary forks remain conversations.
+export function conversationTasks(threads){
+  const byKey=new Map(threads.map(t=>[t.key,t])),legacyCounts=new Map();
+  const legacyKey=t=>!t.threadKind&&t.parentKey&&/^# Context from my IDE setup:/i.test(t.title??'')&&/\[\$ralplan\]\(/.test(t.title)?t.parentKey+'\n'+t.title:null;
+  for(const t of threads){const key=legacyKey(t);if(key)legacyCounts.set(key,(legacyCounts.get(key)??0)+1);}
+  const internal=t=>t.threadKind==='subagent'||(legacyCounts.get(legacyKey(t))??0)>1;
+  const owners=new Map(),members=new Map();
+  for(const t of threads){
+    if(!internal(t))continue;
+    let owner=t;const seen=new Set();
+    while(internal(owner)&&!seen.has(owner.key)){seen.add(owner.key);const parent=byKey.get(owner.parentKey);if(!parent||parent.deviceId!==t.deviceId)break;owner=parent;}
+    // Keep orphans and malformed cycles visible rather than losing records.
+    if(internal(owner))continue;
+    owners.set(t.key,owner.key);
+    if(!members.has(owner.key))members.set(owner.key,[]);
+    members.get(owner.key).push(t);
+  }
+  return threads.filter(t=>!owners.has(t.key)).map(t=>({...t,
+    parentKey:owners.get(t.parentKey)??t.parentKey,
+    internalTasks:members.get(t.key)??[],
+  }));
+}
 export function recentConversations(threads){return [...threads].sort((a,b)=>invocationTime(b)-invocationTime(a)||String(a.key).localeCompare(String(b.key)));}
 export function projectIsActive(project,device){
   if(!device.online)return false;
@@ -15,6 +39,12 @@ export function unread(t,meta){
  if(!t.revision||m?.readRevision===t.revision||m?.nativeReadRevision===t.revision)return false;
  if(t.state==='completed'&&t.nativeUnread===false&&t.nativeReadAt>=Date.parse(t.revision))return false;
  return true;
+}
+export function unreadTone(t,meta){return unread(t,meta)?t.state==='completed'?'done':'working':null;}
+export function unreadSummary(threads,meta){
+ let count=0,tone=null;
+ for(const t of threads){const current=unreadTone(t,meta);if(!current)continue;count++;if(current==='working'||!tone)tone=current;}
+ return {count,tone};
 }
 export function markCompletedRead(threads,meta){
  let count=0;for(const t of threads){if(t.state!=='completed'||!t.online)continue;if(unread(t,meta))count++;meta[t.key]={...meta[t.key],readRevision:t.revision,forceUnread:false};}return count;
@@ -33,9 +63,29 @@ export function parentOf(t,meta){return Object.hasOwn(meta[t.key]??{},'parentKey
 export function treeRows(threads,meta,collapsed=new Set()){
   const keys=new Set(threads.map(t=>t.key)), children=new Map(),roots=[];
   for(const t of threads){const p=parentOf(t,meta);if(p&&keys.has(p)&&p!==t.key){if(!children.has(p))children.set(p,[]);children.get(p).push(t);}else roots.push(t);}
+  // Rank a branch by all its descendants. A resumed fork must not remain at
+  // its old parent's historical position while the project reports it running.
+  const byKey=new Map(threads.map(t=>[t.key,t])),rank=new Map(threads.map((t,i)=>[t.key,{running:0,at:0,index:i}]));
+  for(const t of threads){
+    const running=Number(!!(t.online&&t.state==='running')),at=Math.max(Date.parse(t.lastAt)||0,Number(t.updatedAt)||0),seen=new Set();
+    let key=t.key;
+    while(byKey.has(key)&&!seen.has(key)){seen.add(key);const r=rank.get(key);r.running+=running;r.at=Math.max(r.at,at);key=parentOf(byKey.get(key),meta);}
+  }
+  const compare=(a,b)=>Number(rank.get(b.key).running>0)-Number(rank.get(a.key).running>0)||rank.get(b.key).at-rank.get(a.key).at||rank.get(a.key).index-rank.get(b.key).index;
+  roots.sort(compare);for(const list of children.values())list.sort(compare);
   const rows=[],seen=new Set();
-  function add(t,depth){if(seen.has(t.key))return;seen.add(t.key);rows.push({...t,depth,hasChildren:children.has(t.key)});if(!collapsed.has(t.key))for(const c of children.get(t.key)??[])add(c,depth+1);else {function hide(key){if(seen.has(key))return;seen.add(key);for(const c of children.get(key)??[])hide(c.key);}for(const c of children.get(t.key)??[])hide(c.key);}}
+  function add(t,depth){if(seen.has(t.key))return;seen.add(t.key);const branchRunning=rank.get(t.key).running;rows.push({...t,depth,hasChildren:children.has(t.key),branchRunning,hiddenRunning:collapsed.has(t.key)?branchRunning-Number(!!(t.online&&t.state==='running')):0});if(!collapsed.has(t.key))for(const c of children.get(t.key)??[])add(c,depth+1);else {function hide(key){if(seen.has(key))return;seen.add(key);for(const c of children.get(key)??[])hide(c.key);}for(const c of children.get(t.key)??[])hide(c.key);}}
   for(const t of roots)add(t,0);for(const t of threads)if(!seen.has(t.key))add(t,0);return rows;
+}
+
+export function visibleTreeRows(rows,limit){
+  if(!limit)return rows;
+  const shown=new Set(rows.slice(0,limit).map(t=>t.key)),ancestors=[];
+  for(const row of rows){
+    ancestors.length=row.depth;ancestors[row.depth]=row;
+    if((row.online&&row.state==='running')||row.hiddenRunning>0)for(const ancestor of ancestors)shown.add(ancestor.key);
+  }
+  return rows.filter(t=>shown.has(t.key));
 }
 
 export function projectLocation(cwd) {

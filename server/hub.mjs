@@ -10,18 +10,43 @@ import {markReadBefore,markCompletedRead,groupProjects} from '../src/model.js';
 import {createEventFeed} from './event-feed.mjs';
 import {resolveWorkspaces} from './vscode-workspaces.mjs';
 import {readVscodeState,createVscodeReadTracker} from './vscode-read-state.mjs';
-const trackVscodeReads=createVscodeReadTracker();
+import {observeVscodeReads} from './vscode-read-events.mjs';
+import {createCapacityRecovery} from './capacity-recovery.mjs';
+import {createMessageQueue,changeMessageQueue} from './message-queue.mjs';
+import {normalCompletion} from '../src/messageQueue.js';
+const trackVscodeReads=createVscodeReadTracker({sharedUi:true}),vscodeReadEvents=observeVscodeReads();
 
-const root=resolve(fileURLToPath(new URL('..',import.meta.url))), port=Number(process.env.PORT||4310);
+const root=resolve(fileURLToPath(new URL('..',import.meta.url))), port=Number(process.env.PORT||24319);
 const store=createStore(resolve(process.env.WORKBENCH_DATA||join(root,'.workbench'))), collect=createCollector();
+// Enable the requested workstation once; an explicit off setting survives restarts.
+{
+  const state=structuredClone(store.get());let changed=false;
+  for(const d of state.devices)if(d.type==='ssh'&&/5090/.test(d.name)&&d.autoRetryCapacity==null){d.autoRetryCapacity=true;d.capacityRetrySince=Date.now()-300000;changed=true;}
+  if(changed)store.save(state);
+}
 const cache=new Map(),sshConnections=new Map(),sshErrors=new Map();let current={threads:[],devices:[],updatedAt:null},polling=false;
 const feed=createEventFeed(publicState);
+const recovery=createCapacityRecovery({store,onChange:broadcast,send:async(t,request)=>{
+  const latest=current.threads.find(x=>x.key===t.key);
+  if(!latest?.online||latest.turnId!==request.turnId||latest.turnStatus!=='failed')return {status:'stale',message:'任务状态已变化'};
+  const conn=sshConnections.get(t.deviceId);
+  return conn?conn.retryCapacity(request):{status:'unavailable',message:'请重新连接 SSH'};
+}});
+const messageQueue=createMessageQueue({store,onChange:broadcast,send:async(t,request)=>{
+  const latest=current.threads.find(x=>x.key===t.key);
+  if(!latest?.online||latest.turnId!==request.turnId||!normalCompletion(latest))return {status:'stale',message:'原任务尚未正常完成'};
+  const conn=sshConnections.get(t.deviceId);
+  return conn?conn.sendQueuedMessage(request):{status:'unavailable',message:'请重新连接 SSH'};
+},inspect:async(t,request)=>{
+  const conn=sshConnections.get(t.deviceId);
+  return conn?conn.inspectQueuedMessage(request):{status:'unknown'};
+}});
 function startSsh(d,password){
   sshConnections.get(d.id)?.close();sshErrors.set(d.id,'正在连接 SSH');
   const conn=connectSsh(d,password,snapshot=>{cache.set(d.id,snapshot);sshErrors.delete(d.id);void poll();},error=>{sshErrors.set(d.id,error);void poll();},fingerprint=>{const s=structuredClone(store.get());const saved=s.devices.find(x=>x.id===d.id);if(saved){saved.fingerprint=fingerprint;store.save(s);}});
   sshConnections.set(d.id,conn);
 }
-function publicState(){const s=store.get();return {...current,folders:s.folders,meta:s.meta,projectMeta:s.projectMeta??{}};}
+function publicState(){const s=store.get();return {...current,devices:current.devices.map(d=>({...d,autoRetryCapacity:s.devices.find(x=>x.id===d.id)?.autoRetryCapacity===true})),capacityRetries:s.capacityRetries??{},capacityRetryHistory:true,messageQueues:s.messageQueues??{},folders:s.folders,meta:s.meta,projectMeta:s.projectMeta??{}};}
 function broadcast(){feed.broadcast();}
 async function poll(){
   if(polling)return;polling=true;
@@ -39,6 +64,7 @@ async function poll(){
     }));
     current={updatedAt:Date.now(),threads:results.flatMap(({d,snapshot,online})=>(snapshot?.threads??[]).map(t=>({...t,key:d.id+':'+t.id,deviceId:d.id,deviceName:d.name,online,parentKey:t.parentId?d.id+':'+t.parentId:null}))),devices:results.map(({d,snapshot,online,error})=>({id:d.id,name:d.name,type:d.type,host:d.host,username:d.username,online,error,platform:snapshot?.platform,processes:snapshot?.processes,observedAt:snapshot?.observedAt,url:d.url,fingerprint:d.fingerprint}))};
     trackVscodeReads(await readVscodeState(),current.threads);
+    vscodeReadEvents.apply(current.threads);
     const saved=structuredClone(store.get());let readsChanged=false;
     for(const t of current.threads){
       if(t.online&&t.state==='completed'&&t.revision&&t.nativeUnread===false&&t.nativeReadAt>=Date.parse(t.revision)&&saved.meta[t.key]?.nativeReadRevision!==t.revision){
@@ -48,6 +74,8 @@ async function poll(){
     if(readsChanged)store.save(saved);
     for(const {d,snapshot} of results){const device=current.devices.find(x=>x.id===d.id);if(device)device.readSyncConnected=snapshot?.readSyncConnected;}
     broadcast();
+    void recovery.tick(current.threads);
+    void messageQueue.tick(current.threads);
   }finally{polling=false;}
 }
 function json(res,code,value){res.writeHead(code,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(value));}
@@ -59,12 +87,16 @@ const server=createServer(async(req,res)=>{
   if(req.headers.origin&&!new Set([`http://127.0.0.1:${port}`,`http://localhost:${port}`,'http://127.0.0.1:5173','http://localhost:5173']).has(req.headers.origin)){res.writeHead(403);return res.end();}
   try{
     if(req.method==='GET'&&req.url==='/api/state')return json(res,200,publicState());
-    if(req.method==='GET'&&req.url==='/api/health')return json(res,200,{ok:true,uptime:process.uptime(),heapUsed:process.memoryUsage().heapUsed,...feed.stats()});
+    if(req.method==='GET'&&req.url==='/api/health')return json(res,200,{ok:true,uptime:process.uptime(),heapUsed:process.memoryUsage().heapUsed,readSyncVersion:2,readSyncConnected:vscodeReadEvents.connected,...feed.stats()});
     if(req.method==='GET'&&req.url==='/api/events'){res.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-cache','Connection':'keep-alive'});feed.add(res);return;}
     if(req.method==='POST'&&req.url?.startsWith('/api/')){
       if(req.headers['content-type']!=='application/json')return json(res,415,{error:'Content-Type required'});
       const b=await body(req),s=structuredClone(store.get());
-      if(req.url==='/api/folders'){
+      if(req.url==='/api/message-queue'){
+        const task=current.threads.find(t=>t.key===b.key);
+        changeMessageQueue(store,task,b);broadcast();void messageQueue.tick(current.threads);
+        return json(res,200,{ok:true});
+      }else if(req.url==='/api/folders'){
         const name=String(b.name??'').trim();if(!name||name.length>60)throw new Error('文件夹名称应为 1–60 个字符');s.folders.push({id:randomUUID(),name});
       }else if(req.url==='/api/folder/delete'){
         s.folders=s.folders.filter(f=>f.id!==b.id);for(const m of Object.values(s.meta))if(m.folderId===b.id)m.folderId=null;
@@ -89,6 +121,11 @@ const server=createServer(async(req,res)=>{
         }
         if('read'in b){const t=current.threads.find(t=>t.key===b.key);if('revision'in b&&b.revision!==t.revision)return json(res,409,{error:'收到新回复，请查看最新内容后再修改已读状态'});patch.readRevision=b.read?t.revision:null;patch.forceUnread=!b.read;patch.forceUnreadRevision=b.read?null:t.revision;}
         s.meta[b.key]={...s.meta[b.key],...patch};
+      }else if(req.url==='/api/device/capacity-retry'){
+        const d=s.devices.find(d=>d.id===b.id&&d.type==='ssh');
+        if(!d||typeof b.enabled!=='boolean')throw new Error('请选择 SSH 设备');
+        d.autoRetryCapacity=b.enabled;
+        if(b.enabled)d.capacityRetrySince=Date.now()-300000;
       }else if(req.url==='/api/devices'){
         const name=String(b.name??'').trim(),token=String(b.token??'');if(!name||name.length>60||token.length<24)throw new Error('请填写设备名称与完整配对密钥');
         const url=validEndpoint(b.url);if(s.devices.some(d=>d.url===url))throw new Error('设备地址已添加');
@@ -97,7 +134,7 @@ const server=createServer(async(req,res)=>{
         if(!/^[a-zA-Z0-9._-]+$/.test(b.host??'')||!b.username||!b.password||!b.name)throw new Error('请填写设备名称、地址、用户名和密码');
         const sshPort=Number(b.port||22);if(!Number.isInteger(sshPort)||sshPort<1||sshPort>65535)throw new Error('SSH 端口无效');
         if(s.devices.some(d=>d.type==='ssh'&&d.host===b.host&&d.username===b.username&&d.port===sshPort))throw new Error('SSH 设备已添加，请使用重新连接');
-        const d={id:randomUUID(),type:'ssh',name:String(b.name).slice(0,60),host:b.host,username:b.username,port:sshPort};s.devices.push(d);store.save(s);startSsh(d,b.password);return json(res,200,{ok:true,id:d.id});
+        const d={id:randomUUID(),type:'ssh',name:String(b.name).slice(0,60),host:b.host,username:b.username,port:sshPort,autoRetryCapacity:/5090/.test(b.name),capacityRetrySince:Date.now()-300000};s.devices.push(d);store.save(s);startSsh(d,b.password);return json(res,200,{ok:true,id:d.id});
       }else if(req.url==='/api/ssh/reconnect'){
         const d=s.devices.find(d=>d.id===b.id&&d.type==='ssh');if(!d||!b.password)throw new Error('请选择设备并填写密码');startSsh(d,b.password);return json(res,200,{ok:true});
       }else if(req.url==='/api/device/delete'){sshConnections.get(b.id)?.close();sshConnections.delete(b.id);sshErrors.delete(b.id);s.devices=s.devices.filter(d=>d.id!==b.id);cache.delete(b.id);}
