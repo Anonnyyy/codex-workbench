@@ -40,6 +40,7 @@ def events(path):
     last_user=seed.get('lastUserAt')
     turn_id,turn_status,turn_error=seed.get('turnId'),seed.get('turnStatus'),seed.get('turnError')
     attention_kind,attention_at=seed.get('attentionKind'),seed.get('attentionAt')
+    attention_call_id,attention_async=seed.get('attentionCallId'),seed.get('attentionAsync',False)
     thread_kind=seed.get('threadKind')
     try:
         p = json.loads(first).get('payload', {})
@@ -88,12 +89,21 @@ def events(path):
             if p.get('phase')=='commentary' and not attention_kind: state,last='running',at
         if kind=='response_item' and typ in ('function_call','custom_tool_call') and (p.get('name') or '').rsplit('.',1)[-1].rsplit(':',1)[-1] in ('request_user_input','request_user_input_async'):
             state,last,attention_kind,attention_at='attention',at,'question',at
+            attention_call_id,attention_async=p.get('call_id'),p.get('name','').endswith('_async')
             if millis(at)>millis(revision): revision=at
+        if kind=='response_item' and typ in ('function_call_output','custom_tool_call_output') and attention_kind=='question' and attention_call_id and p.get('call_id')==attention_call_id:
+            output=p.get('output')
+            try: output=json.loads(output)
+            except (ValueError,TypeError): pass
+            if not attention_async or (isinstance(output,dict) and 'answers' in output):
+                state,last,attention_kind,attention_at,attention_call_id,attention_async='running',at,None,None,None,False
+                if millis(at)>millis(revision): revision=at
         if kind=='response_item' and typ in ('function_call','custom_tool_call','reasoning') and not attention_kind: state,last='running',at
     if state=='running' and time.time()*1000-millis(last)>120000: state='unknown'
     messages=list({(m['at'],m['text']):m for m in messages}.values())
     messages.sort(key=lambda m: m['at'] or '')
-    value={'state':state,'lastAt':last,'lastUserAt':last_user,'parentId':parent,'turnId':turn_id,'turnStatus':turn_status,'turnError':turn_error,'attentionKind':attention_kind,'attentionAt':attention_at,'messages':messages[-8:],'revision':revision}
+    if not attention_kind: attention_call_id,attention_async=None,False
+    value={'state':state,'lastAt':last,'lastUserAt':last_user,'parentId':parent,'turnId':turn_id,'turnStatus':turn_status,'turnError':turn_error,'attentionKind':attention_kind,'attentionAt':attention_at,'attentionCallId':attention_call_id,'attentionAsync':attention_async,'messages':messages[-8:],'revision':revision}
     if thread_kind is not None: value['threadKind']=thread_kind
     cache[str(resolved)]=((info.st_mtime_ns,info.st_size),value)
     return value

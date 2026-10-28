@@ -36,6 +36,17 @@ if (-not $running) {
     }
     if (-not $running) { throw 'Unable to start Codex Workbench. Check .workbench/server-error.log.' }
 }
+$reminderUrl = 'http://127.0.0.1:' + ($port + 1)
+$remindersRunning = $false
+try { $reminderHealth = Invoke-RestMethod ($reminderUrl + '/health') -TimeoutSec 1; $remindersRunning = $reminderHealth.service -eq 'codex-desktop-notifications' -and $reminderHealth.hubPort -eq $port } catch {}
+if (-not $remindersRunning) {
+    New-Item -ItemType Directory -Path (Join-Path $taskRoot '.workbench') -Force | Out-Null
+    $previousReminderPort = $env:PORT
+    try {
+        $env:PORT = [string]$port
+        Start-Process -FilePath $nodePath -ArgumentList 'server/desktop-notifications.mjs' -WorkingDirectory $taskRoot -WindowStyle Hidden -RedirectStandardOutput (Join-Path $taskRoot '.workbench/desktop-reminders.log') -RedirectStandardError (Join-Path $taskRoot '.workbench/desktop-reminders-error.log')
+    } finally { $env:PORT = $previousReminderPort }
+}
 $edgePath = Join-Path ${env:ProgramFiles(x86)} 'Microsoft/Edge/Application/msedge.exe'
 if ($env:WORKBENCH_NO_OPEN -ne '1') {
     if (Test-Path -LiteralPath $edgePath) { Start-Process -FilePath $edgePath -ArgumentList ('--app=' + $baseUrl) }

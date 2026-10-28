@@ -1,0 +1,30 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {Client} from 'ssh2';
+import {connectSsh} from '../server/ssh.mjs';
+
+test('automatic reconnect keeps the first accepted host identity',t=>{
+  const sessions=[],fingerprints=[],statuses=[];
+  t.mock.timers.enable({apis:['setTimeout']});
+  t.mock.method(Client.prototype,'connect',function(settings){sessions.push({client:this,settings});return this;});
+  t.mock.method(Client.prototype,'exec',function(){return this;});
+  t.mock.method(Client.prototype,'end',function(){return this;});
+  const device={host:'workbench-identity-test.invalid',port:65535,username:'test'};
+  const link=connectSsh(device,'test',()=>{},status=>statuses.push(status),value=>fingerprints.push(value));
+  t.after(()=>link.close());
+  const firstKey=Buffer.from('first host identity'),changedKey=Buffer.from('changed host identity');
+  assert.equal(sessions[0].settings.hostVerifier(firstKey),true);
+  sessions[0].client.emit('ready');
+  assert.equal(fingerprints.length,1);
+  assert.equal(device.fingerprint,undefined);
+  sessions[0].client.emit('close');
+  t.mock.timers.tick(2000);
+  assert.equal(sessions.length,2);
+  assert.equal(sessions[1].settings.hostVerifier(firstKey),true);
+  assert.equal(sessions[1].settings.hostVerifier(changedKey),false);
+  sessions[1].client.emit('error',new Error('Host denied (verification failed)'));
+  sessions[1].client.emit('close');
+  t.mock.timers.tick(30000);
+  assert.equal(sessions.length,2);
+  assert.match(statuses.at(-1),/主机身份不匹配/);
+});

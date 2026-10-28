@@ -1,10 +1,12 @@
 import {useEffect,useRef,useState} from 'react';
 import {conversationTasks} from './model';
 import {createSystemNotifier,notificationWorker,notificationPreferenceKey,systemNotificationsEnabled,setSystemNotificationsEnabled,closeSystemNotifications} from './systemNotifications';
+import {usesDesktopNotifications,desktopNotificationsRequest} from './desktopNotifications';
 const initial={threads:[],devices:[],folders:[],meta:{}};
+const desktopReminders=usesDesktopNotifications();
 export function useWorkbench(){
   const [data,setData]=useState(initial),[connected,setConnected]=useState(false),[toast,setToast]=useState('');
-  const [notificationsEnabled,setNotificationsEnabled]=useState(systemNotificationsEnabled);
+  const [notificationsEnabled,setNotificationsEnabled]=useState(()=>!desktopReminders&&systemNotificationsEnabled());
   const changingNotifications=useRef(false);
   const [reminderToOpen,setReminderToOpen]=useState(null);
   // Discard the retired in-page reminder queue.
@@ -12,6 +14,19 @@ export function useWorkbench(){
     try{localStorage.removeItem('codex-workbench-reminders-v1');}catch{}
   },[]);
   useEffect(()=>{
+    if(desktopReminders){
+      let disposed=false,busy=false;
+      // Old open tabs observe this preference too, preventing duplicate Edge banners.
+      setSystemNotificationsEnabled(false);
+      void notificationWorker().then(closeSystemNotifications).catch(()=>{});
+      const sync=async()=>{
+        if(busy)return;busy=true;
+        try{const status=await desktopNotificationsRequest();if(!disposed)setNotificationsEnabled(status.enabled);}
+        catch{}finally{busy=false;}
+      };
+      void sync();const timer=setInterval(sync,5000);window.addEventListener('focus',sync);
+      return()=>{disposed=true;clearInterval(timer);window.removeEventListener('focus',sync);};
+    }
     const sync=()=>{
       const enabled=systemNotificationsEnabled();setNotificationsEnabled(enabled);
       if(!enabled)void navigator.serviceWorker?.getRegistration().then(closeSystemNotifications).catch(()=>{});
@@ -21,7 +36,7 @@ export function useWorkbench(){
     sync();window.addEventListener('focus',sync);window.addEventListener('storage',storage);navigator.serviceWorker?.addEventListener('message',open);
     return()=>{window.removeEventListener('focus',sync);window.removeEventListener('storage',storage);navigator.serviceWorker?.removeEventListener('message',open);};
   },[]);
-  useEffect(()=>{let lastMessage=0,reportedError=false;const notify=createSystemNotifier({registration:notificationWorker,enabled:systemNotificationsEnabled});const events=new EventSource('/api/events');events.onerror=()=>setConnected(false);events.onmessage=e=>{
+  useEffect(()=>{let lastMessage=0,reportedError=false;const notify=createSystemNotifier({registration:notificationWorker,enabled:()=>!desktopReminders&&systemNotificationsEnabled()});const events=new EventSource('/api/events');events.onerror=()=>setConnected(false);events.onmessage=e=>{
     const snapshot=JSON.parse(e.data),next={...snapshot,threads:conversationTasks(snapshot.threads)};
     lastMessage=Date.now();setConnected(true);
     setData(next);
@@ -44,6 +59,14 @@ export function useWorkbench(){
     if(changingNotifications.current)return;
     changingNotifications.current=true;
     try{
+      if(desktopReminders){
+        const status=await desktopNotificationsRequest();
+        if(!status.ready)throw new Error('桌面提醒窗口正在启动，请稍后再试');
+        const next=await desktopNotificationsRequest('/settings',{enabled:!status.enabled});
+        setNotificationsEnabled(next.enabled);
+        if(next.enabled)await desktopNotificationsRequest('/test',{});
+        setToast(next.enabled?'已开启桌面提醒，显示在屏幕右上角':'已关闭桌面提醒，并收起已有通知');return;
+      }
       if(systemNotificationsEnabled()){
         setSystemNotificationsEnabled(false);setNotificationsEnabled(false);
         await closeSystemNotifications(await navigator.serviceWorker?.getRegistration());
@@ -57,7 +80,7 @@ export function useWorkbench(){
       await worker.showNotification('Codex 工作台 · 测试提醒',{body:'任务完成或等待你回答时，将使用这种系统通知提醒。',icon:'/workbench.png',tag:'codex-workbench-test',requireInteraction:false});
       if(!systemNotificationsEnabled()){await closeSystemNotifications(worker);return;}
       setToast('已开启系统提醒');
-    }catch(error){setToast('系统提醒暂不可用：'+error.message);}finally{changingNotifications.current=false;}
+    }catch(error){setToast('提醒暂不可用：'+error.message);}finally{changingNotifications.current=false;}
   }
   const visibleData=connected?data:{...data,devices:data.devices.map(d=>({...d,online:false})),threads:data.threads.map(t=>({...t,online:false}))};
   return {data:visibleData,connected,toast,action,notifications,notificationsEnabled,reminderToOpen,clearReminderToOpen:()=>setReminderToOpen(null)};

@@ -26,6 +26,7 @@ test('completion and questions use one system notification per reply and read cl
   assert.equal(r.calls[0].body,'文件夹：论文修改\nTask · 已完成');
   assert.equal(r.calls[1].title,'Codex 工作台 · 5090');
   assert.equal(r.calls[1].body,'文件夹：grail\nTask · 等待你回答');
+  assert.ok(r.calls.every(notification=>notification.requireInteraction===false));
   await update(snapshot([a,b]));assert.equal(r.calls.length,2);
   await update(snapshot([a,b],{[a.key]:{readRevision:a.revision}}));
   assert.equal(r.items[0].closed,true);assert.equal(r.items[1].closed,false);
@@ -40,6 +41,73 @@ test('a new page reconciles retained notifications without replaying historical 
   const refreshed=createSystemNotifier(r);
   await refreshed(snapshot([a],{[a.key]:{readRevision:a.revision}}));
   assert.equal(r.items[0].closed,true);assert.equal(r.calls.length,1);
+});
+
+test('refresh closes legacy sticky banners without reading or replaying their tasks',async()=>{
+  const r=registry(),worker=await r.registration(),a=completed();
+  await worker.showNotification('old',{tag:'codex-workbench:'+a.key,requireInteraction:true,data:{key:a.key,revision:a.revision}});
+  await worker.showNotification('other',{tag:'another-app',requireInteraction:true});
+  const current=snapshot([a]),update=createSystemNotifier(r);
+  await update(current);await update(current);
+  assert.equal(r.items[0].closed,true);assert.equal(r.items[1].closed,false);
+  assert.equal(r.calls.length,2);assert.deepEqual(current.meta,{});
+});
+
+test('worker upgrade clears only legacy sticky workbench banners',async()=>{
+  const r=registry(),worker=await r.registration(),listeners={};let pending,claimed=false;
+  for(const [tag,requireInteraction] of [['codex-workbench:old',true],['codex-workbench:new',false],['another-app',true]]){
+    await worker.showNotification('test',{tag,requireInteraction});
+  }
+  const self={registration:worker,addEventListener:(name,fn)=>{listeners[name]=fn;},clients:{claim:async()=>{claimed=true;}}};
+  vm.runInNewContext(await readFile(new URL('../public/reminder-worker.js',import.meta.url),'utf8'),{self});
+  listeners.activate({waitUntil:p=>{pending=p;}});await pending;
+  assert.deepEqual(r.items.map(n=>n.closed),[true,false,false]);assert.equal(claimed,true);
+});
+
+test('Windows migration clears all old browser banners, including non-sticky and test notices',async()=>{
+  const r=registry(),worker=await r.registration(),listeners={};let pending;
+  for(const tag of ['codex-workbench:a','codex-workbench-test','another-app'])await worker.showNotification('test',{tag,requireInteraction:false});
+  const self={navigator:{platform:'Win32'},registration:worker,addEventListener:(name,fn)=>{listeners[name]=fn;},clients:{claim:async()=>{}}};
+  vm.runInNewContext(await readFile(new URL('../public/reminder-worker.js',import.meta.url),'utf8'),{self});
+  listeners.activate({waitUntil:p=>{pending=p;}});await pending;
+  assert.deepEqual(r.items.map(n=>n.closed),[true,true,false]);
+});
+
+test('one unanswered question does not notify again for commentary or reconnect',async()=>{
+  const r=registry(),update=createSystemNotifier(r);
+  await update(snapshot([task()]));
+  const question=task('local:a',{state:'attention',attentionKind:'question',attentionAt:'q1',revision:'r2'});
+  await update(snapshot([question]));
+  await update(snapshot([{...question,revision:'r3'}]));
+  assert.equal(r.calls.length,1);assert.equal(r.items[0].closed,false);
+  r.items[0].close(); // Dismissing a toast must not make commentary repeat it.
+  await update(snapshot([{...question,revision:'r4',online:false}]));
+  await update(snapshot([{...question,revision:'r4',online:true}]));
+  assert.equal(r.calls.length,1);
+  await update(snapshot([{...question,attentionAt:'q2',revision:'r5'}]));
+  assert.equal(r.calls.length,2);
+});
+
+test('resuming work closes an answered question even without a new reply revision',async()=>{
+  const r=registry(),update=createSystemNotifier(r);
+  await update(snapshot([task()]));
+  await update(snapshot([task('local:a',{state:'attention',attentionKind:'question',attentionAt:'q1'})]));
+  assert.equal(r.calls.length,1);
+  await update(snapshot([task()]));
+  assert.equal(r.items[0].closed,true);
+});
+
+test('answer received during slow registration suppresses the obsolete question',async()=>{
+  const r=registry(),worker=await r.registration();let release,entered,delay=false;
+  const ready=new Promise(resolve=>{entered=resolve;});
+  const update=createSystemNotifier({registration:async()=>{
+    if(delay){entered();await new Promise(resolve=>{release=resolve;});}return worker;
+  }});
+  await update(snapshot([task()]));delay=true;
+  const pending=update(snapshot([task('local:a',{state:'attention',attentionKind:'question',attentionAt:'q1'})]));
+  await ready;delay=false;
+  const answered=update(snapshot([task()]));release();await Promise.all([pending,answered]);
+  assert.equal(r.calls.length,0);
 });
 
 test('capacity errors and denied notification permission never produce notifications',async()=>{

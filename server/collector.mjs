@@ -8,6 +8,7 @@ export function parseEvents(text, now=Date.now(), seed={}) {
   let state=seed.state??'unknown', lastAt=seed.lastAt??null, parentId=seed.parentId??null, messages=[...(seed.messages??[])], revision=seed.revision??'';
   let lastUserAt=seed.lastUserAt??null;
   let turnId=seed.turnId??null,turnStatus=seed.turnStatus??null,turnError=seed.turnError??null,attentionKind=seed.attentionKind??null,attentionAt=seed.attentionAt??null;
+  let attentionCallId=seed.attentionCallId??null,attentionAsync=seed.attentionAsync??false;
   let threadKind=seed.threadKind,metadataSeen=false;
   const advanceRevision=at=>{if(at&&Date.parse(at)>(Date.parse(revision)||0))revision=at;};
   for(const line of text.split('\n')) {
@@ -41,14 +42,20 @@ export function parseEvents(text, now=Date.now(), seed={}) {
       if(['final','final_answer'].includes(p.phase)&&attentionKind!=='question') {state='completed';lastAt=at;attentionKind=null;attentionAt=null;}
       if(p.phase==='commentary'&&!attentionKind) {state='running';lastAt=at;}
     }
-    if(e.type==='response_item'&&['function_call','custom_tool_call'].includes(p.type)&&/(?:^|[.:])request_user_input(?:_async)?$/.test(p.name??'')) {state='attention';lastAt=at;attentionKind='question';attentionAt=at;advanceRevision(at);}
+    if(e.type==='response_item'&&['function_call','custom_tool_call'].includes(p.type)&&/(?:^|[.:])request_user_input(?:_async)?$/.test(p.name??'')) {state='attention';lastAt=at;attentionKind='question';attentionAt=at;attentionCallId=p.call_id??null;attentionAsync=p.name.endsWith('_async');advanceRevision(at);}
+    if(e.type==='response_item'&&['function_call_output','custom_tool_call_output'].includes(p.type)&&attentionKind==='question'&&attentionCallId&&p.call_id===attentionCallId){
+      let output=p.output;try{output=JSON.parse(output);}catch{}
+      // Async {accepted:true} only acknowledges displaying the question.
+      if(!attentionAsync||(output&&typeof output==='object'&&Object.hasOwn(output,'answers'))){state='running';lastAt=at;attentionKind=null;attentionAt=null;attentionCallId=null;attentionAsync=false;advanceRevision(at);}
+    }
     if(e.type==='response_item'&&['function_call','custom_tool_call','reasoning'].includes(p.type)&&!attentionKind) {state='running';lastAt=at;}
     if(state==='running'&&e.type==='event_msg'&&p.type==='token_count')lastAt=at;
   }
   // A stale start is not proof that a process is still alive.
   if(state==='running'&&(!lastAt||now-Date.parse(lastAt)>120000))state='unknown';
   messages=[...new Map(messages.map(m=>[m.at+':'+m.text,m])).values()].sort((a,b)=>Date.parse(a.at)-Date.parse(b.at));
-  return {state,lastAt,lastUserAt,parentId,threadKind,turnId,turnStatus,turnError,attentionKind,attentionAt,messages:messages.slice(-8),revision};
+  if(!attentionKind){attentionCallId=null;attentionAsync=false;}
+  return {state,lastAt,lastUserAt,parentId,threadKind,turnId,turnStatus,turnError,attentionKind,attentionAt,attentionCallId,attentionAsync,messages:messages.slice(-8),revision};
 }
 
 export function createCollector(home=process.env.CODEX_HOME||join(homedir(),'.codex')) {

@@ -14,6 +14,32 @@ functions = ast.Module(body=[node for node in tree.body
 
 
 class RemoteMetadataTest(unittest.TestCase):
+    def test_question_outputs_clear_only_the_matching_answer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = pathlib.Path(directory).resolve()
+            scope = dict(pathlib=pathlib, datetime=datetime, json=json, time=time, home=home, cache={})
+            exec(compile(functions, str(source), 'exec'), scope)
+            path = home / 'question.jsonl'
+            now = datetime.datetime.now(datetime.timezone.utc)
+            def record(payload, seconds):
+                return dict(type='response_item', timestamp=(now+datetime.timedelta(seconds=seconds)).isoformat(), payload=payload)
+            for name in ('request_user_input', 'functions.request_user_input_async'):
+                scope['cache'].clear()
+                records = [record(dict(type='function_call', name=name, call_id='q'), 0),
+                           record(dict(type='function_call_output', call_id='other', output='{}'), 1)]
+                if name.endswith('_async'):
+                    records.append(record(dict(type='function_call_output', call_id='q', output='{"accepted":true}'), 2))
+                path.write_text('\n'.join(map(json.dumps, records)), encoding='utf8')
+                self.assertEqual(scope['events'](str(path))['attentionKind'], 'question')
+                records.append(record(dict(type='function_call_output', call_id='q', output='{"answers":{}}'), 3))
+                path.write_text('\n'.join(map(json.dumps, records)), encoding='utf8')
+                result = scope['events'](str(path))
+                self.assertIsNone(result['attentionKind'])
+                self.assertEqual(result['state'], 'running')
+                records.append(record(dict(type='reasoning'), 4))
+                path.write_text('\n'.join(map(json.dumps, records)), encoding='utf8')
+                self.assertIsNone(scope['events'](str(path))['attentionKind'])
+
     def test_capacity_failure_is_not_completed_and_next_turn_clears_error(self):
         with tempfile.TemporaryDirectory() as directory:
             home = pathlib.Path(directory).resolve()

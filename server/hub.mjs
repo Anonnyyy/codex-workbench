@@ -56,7 +56,7 @@ async function poll(){
       try{
         let snapshot;
         if(d.id==='local')snapshot=await collect();
-        else if(d.type==='ssh'){snapshot=cache.get(d.id);if(sshErrors.has(d.id)||!snapshot||Date.now()-snapshot.observedAt>15000)throw new Error(sshErrors.get(d.id)||'请提供密码连接 SSH');}
+        else if(d.type==='ssh'){snapshot=cache.get(d.id);if(sshErrors.has(d.id)||!snapshot||Date.now()-snapshot.observedAt>15000)throw new Error(sshErrors.get(d.id)||(snapshot?'远程任务更新超时，等待同步恢复':'请提供密码连接 SSH'));}
         else {const r=await fetch(d.url+'/snapshot',{headers:{Authorization:'Bearer '+d.token},signal:AbortSignal.timeout(3500),redirect:'error'});if(!r.ok)throw new Error(r.status===401?'配对密钥不正确':'采集端暂不可用');snapshot=await r.json();if(!Array.isArray(snapshot.threads)||snapshot.threads.length>1000)throw new Error('设备数据格式错误');}
         if(d.type==='ssh')snapshot={...snapshot,processes:await resolveWorkspaces(d,snapshot.processes)};
         cache.set(d.id,snapshot);return {d,snapshot,online:true};

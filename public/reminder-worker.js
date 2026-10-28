@@ -1,5 +1,13 @@
 self.addEventListener('install',event=>event.waitUntil(self.skipWaiting()));
-self.addEventListener('activate',event=>event.waitUntil(self.clients.claim()));
+self.addEventListener('activate',event=>event.waitUntil((async()=>{
+  // Windows uses the positionable desktop host. Retire its old Edge banners.
+  const desktop=/Win/i.test(self.navigator?.platform??'');
+  for(const notification of await self.registration.getNotifications()){
+    const ours=notification.tag?.startsWith('codex-workbench:')||notification.tag==='codex-workbench-test';
+    if(ours&&(desktop||notification.requireInteraction))notification.close();
+  }
+  await self.clients.claim();
+})()));
 self.addEventListener('notificationclick',event=>{
   const key=event.notification.data?.key;
   event.notification.close();
